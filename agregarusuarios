@@ -1,0 +1,1702 @@
+import 'dart:convert';
+import 'dart:html' as html;
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+
+// Sistema de logging mejorado
+class ErrorLogger {
+  static final ErrorLogger _instance = ErrorLogger._internal();
+  factory ErrorLogger() => _instance;
+  ErrorLogger._internal();
+
+  static const String _errorTag = '🚨 ERROR';
+  static const String _warningTag = '⚠️ ADVERTENCIA';
+  static const String _infoTag = 'ℹ️ INFORMACIÓN';
+
+  void logError(String message, {dynamic error, StackTrace? stackTrace}) {
+    final timestamp = DateTime.now().toIso8601String();
+    final errorMessage = '$_errorTag [$timestamp]: $message';
+
+    print('\x1B[31m$errorMessage\x1B[0m');
+    if (error != null) print('\x1B[33mError: $error\x1B[0m');
+    if (stackTrace != null) print('\x1B[35mStackTrace: $stackTrace\x1B[0m');
+  }
+
+  void logWarning(String message) {
+    final timestamp = DateTime.now().toIso8601String();
+    print('\x1B[33m$_warningTag [$timestamp]: $message\x1B[0m');
+  }
+
+  void logInfo(String message) {
+    final timestamp = DateTime.now().toIso8601String();
+    print('\x1B[32m$_infoTag [$timestamp]: $message\x1B[0m');
+  }
+
+  static void setupGlobalErrorHandling() {
+    FlutterError.onError = (FlutterErrorDetails details) {
+      ErrorLogger().logError(
+        'Excepción de Flutter no capturada',
+        error: details.exception,
+        stackTrace: details.stack,
+      );
+    };
+
+    PlatformDispatcher.instance.onError = (error, stack) {
+      ErrorLogger().logError(
+        'Excepción de Dart no capturada',
+        error: error,
+        stackTrace: stack,
+      );
+      return true;
+    };
+  }
+}
+
+// Función para guardar archivos multiplataforma
+void guardarArchivo(
+  String contenido,
+  String filename, {
+  String mimeType = 'text/plain',
+}) {
+  if (kIsWeb) {
+    _downloadOnWeb(contenido, filename, mimeType);
+  } else {
+    _downloadOnMobile(contenido, filename);
+  }
+}
+
+void _downloadOnWeb(String contenido, String filename, String mimeType) {
+  try {
+    final blob = html.Blob([contenido], mimeType);
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    final anchor = html.AnchorElement(href: url)
+      ..setAttribute('download', filename)
+      ..click();
+    html.Url.revokeObjectUrl(url);
+    ErrorLogger().logInfo('Descarga web iniciada: $filename');
+  } catch (e) {
+    ErrorLogger().logError('Error al descargar en web', error: e);
+  }
+}
+
+Future<void> _downloadOnMobile(String contenido, String filename) async {
+  try {
+    final directory = await getTemporaryDirectory();
+    final file = File('${directory.path}/$filename');
+    await file.writeAsString(contenido);
+
+    final xFile = XFile(file.path);
+    await Share.shareXFiles([xFile], text: 'Archivo exportado: $filename');
+    ErrorLogger().logInfo('Archivo móvil guardado: ${file.path}');
+  } catch (e) {
+    ErrorLogger().logError('Error al guardar en móvil', error: e);
+  }
+}
+
+void main() {
+  ErrorLogger.setupGlobalErrorHandling();
+  runApp(const MiAplicacion());
+}
+
+class MiAplicacion extends StatelessWidget {
+  const MiAplicacion({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    ErrorLogger().logInfo('Aplicación iniciada');
+
+    return MaterialApp(
+      title: 'Gestión de Contactos Pro+ 🚀',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+        fontFamily: 'Roboto',
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          filled: true,
+          fillColor: Colors.grey[50],
+        ),
+      ),
+      home: const PantallaFormulario(),
+      routes: {'/lista': (context) => const PantallaLista()},
+    );
+  }
+}
+
+class Contacto {
+  final String nombre;
+  final String telefono;
+
+  Contacto({required this.nombre, required this.telefono});
+
+  String toStorageString() => '$nombre|$telefono';
+
+  factory Contacto.fromStorageString(String data) {
+    try {
+      final parts = data.split('|');
+      return Contacto(
+        nombre: parts[0],
+        telefono: parts.length > 1 ? parts[1] : '',
+      );
+    } catch (e) {
+      ErrorLogger().logError(
+        'Error al crear Contacto desde string: $data',
+        error: e,
+      );
+      rethrow;
+    }
+  }
+
+  Map<String, dynamic> toJson() => {'nombre': nombre, 'telefono': telefono};
+}
+
+class ContactoService {
+  static const String _key = 'contactos';
+  static const String _keyLogros = 'logros';
+
+  static Future<List<Contacto>> cargarContactos() async {
+    try {
+      ErrorLogger().logInfo('Cargando contactos desde SharedPreferences');
+      final prefs = await SharedPreferences.getInstance();
+      final contactos = prefs.getStringList(_key) ?? [];
+      ErrorLogger().logInfo('${contactos.length} contactos encontrados');
+
+      final resultado = contactos
+          .map((c) => Contacto.fromStorageString(c))
+          .toList();
+      ErrorLogger().logInfo('Contactos cargados exitosamente');
+      return resultado;
+    } catch (e, stackTrace) {
+      ErrorLogger().logError(
+        'Error al cargar contactos',
+        error: e,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
+  }
+
+  static Future<void> guardarContacto(Contacto contacto) async {
+    try {
+      ErrorLogger().logInfo('Guardando contacto: ${contacto.nombre}');
+      final prefs = await SharedPreferences.getInstance();
+      final contactos = await cargarContactos();
+      contactos.add(contacto);
+
+      await prefs.setStringList(
+        _key,
+        contactos.map((c) => c.toStorageString()).toList(),
+      );
+
+      // Verificar logros después de guardar
+      _verificarLogros(contactos.length + 1);
+
+      ErrorLogger().logInfo('Contacto guardado exitosamente');
+    } catch (e, stackTrace) {
+      ErrorLogger().logError(
+        'Error al guardar contacto: ${contacto.nombre}',
+        error: e,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
+  }
+
+  static Future<void> _verificarLogros(int totalContactos) async {
+    final prefs = await SharedPreferences.getInstance();
+    final logros = prefs.getStringList(_keyLogros) ?? [];
+
+    if (totalContactos >= 1 && !logros.contains('primer_contacto')) {
+      logros.add('primer_contacto');
+    }
+    if (totalContactos >= 5 && !logros.contains('coleccionista')) {
+      logros.add('coleccionista');
+    }
+    if (totalContactos >= 10 && !logros.contains('social')) {
+      logros.add('social');
+    }
+    if (totalContactos >= 20 && !logros.contains('popular')) {
+      logros.add('popular');
+    }
+
+    await prefs.setStringList(_keyLogros, logros);
+  }
+
+  static Future<List<String>> obtenerLogros() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_keyLogros) ?? [];
+  }
+
+  static Future<void> eliminarContacto(Contacto contacto) async {
+    try {
+      ErrorLogger().logInfo('Eliminando contacto: ${contacto.nombre}');
+      final prefs = await SharedPreferences.getInstance();
+      final contactos = await cargarContactos();
+      final cantidadInicial = contactos.length;
+
+      contactos.removeWhere(
+        (c) => c.toStorageString() == contacto.toStorageString(),
+      );
+
+      await prefs.setStringList(
+        _key,
+        contactos.map((c) => c.toStorageString()).toList(),
+      );
+
+      final cantidadFinal = contactos.length;
+      ErrorLogger().logInfo(
+        'Contacto eliminado. Antes: $cantidadInicial, Después: $cantidadFinal',
+      );
+    } catch (e, stackTrace) {
+      ErrorLogger().logError(
+        'Error al eliminar contacto: ${contacto.nombre}',
+        error: e,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
+  }
+
+  static Future<void> importarContactos(List<Contacto> nuevosContactos) async {
+    try {
+      ErrorLogger().logInfo('Importando ${nuevosContactos.length} contactos');
+      final prefs = await SharedPreferences.getInstance();
+      final contactosExistentes = await cargarContactos();
+      contactosExistentes.addAll(nuevosContactos);
+
+      final contactosUnicos = contactosExistentes.toSet().toList();
+      await prefs.setStringList(
+        _key,
+        contactosUnicos.map((c) => c.toStorageString()).toList(),
+      );
+
+      ErrorLogger().logInfo(
+        'Importación completada. Total: ${contactosUnicos.length} contactos',
+      );
+    } catch (e, stackTrace) {
+      ErrorLogger().logError(
+        'Error al importar contactos',
+        error: e,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
+  }
+}
+
+class ExportService {
+  static Future<String> exportarContactos(
+    List<Contacto> contactos,
+    String formato,
+  ) async {
+    try {
+      ErrorLogger().logInfo(
+        'Exportando ${contactos.length} contactos a $formato',
+      );
+
+      String contenido = '';
+      String filename = 'contactos_${DateTime.now().millisecondsSinceEpoch}';
+
+      switch (formato) {
+        case 'txt':
+          contenido = _createTxtContent(contactos);
+          filename += '.txt';
+          break;
+        case 'csv':
+          contenido = _createCsvContent(contactos);
+          filename += '.csv';
+          break;
+        case 'html':
+          contenido = _createHtmlContent(contactos);
+          filename += '.html';
+          break;
+        case 'json':
+          contenido = jsonEncode(contactos.map((c) => c.toJson()).toList());
+          filename += '.json';
+          break;
+        default:
+          throw 'Formato no soportado: $formato';
+      }
+
+      guardarArchivo(contenido, filename);
+      ErrorLogger().logInfo('Exportación a $formato completada');
+      return contenido;
+    } catch (e, stackTrace) {
+      ErrorLogger().logError(
+        'Error al exportar a $formato',
+        error: e,
+        stackTrace: stackTrace,
+      );
+      rethrow;
+    }
+  }
+
+  static String _createTxtContent(List<Contacto> contactos) {
+    return '📒 LISTA DE CONTACTOS\n\n' +
+        'Nombre\tTeléfono\n' +
+        '${contactos.map((c) => '${c.nombre}\t${c.telefono}').join('\n')}\n\n' +
+        'Total: ${contactos.length} contactos';
+  }
+
+  static String _createCsvContent(List<Contacto> contactos) {
+    return 'Nombre,Telefono\n' +
+        '${contactos.map((c) => '"${c.nombre}","${c.telefono}"').join('\n')}';
+  }
+
+  static String _createHtmlContent(List<Contacto> contactos) {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lista de Contactos</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #4CAF50; color: white; }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+        tr:hover { background-color: #ddd; }
+    </style>
+</head>
+<body>
+    <h1>📋 Lista de Contactos</h1>
+    <table>
+        <tr><th>Nombre</th><th>Teléfono</th></tr>
+        ${contactos.map((c) => '<tr><td>${c.nombre}</td><td>${c.telefono}</td></tr>').join()}
+    </table>
+    <p><strong>Total: ${contactos.length} contactos</strong></p>
+</body>
+</html>''';
+  }
+}
+
+class PantallaFormulario extends StatefulWidget {
+  const PantallaFormulario({super.key});
+
+  @override
+  State<PantallaFormulario> createState() => _PantallaFormularioState();
+}
+
+class _PantallaFormularioState extends State<PantallaFormulario> {
+  final _formKey = GlobalKey<FormState>();
+  final _nombreController = TextEditingController();
+  final _telefonoController = TextEditingController();
+  bool _guardando = false;
+
+  Future<void> _guardarContacto() async {
+    final nombreVacio = _nombreController.text.trim().isEmpty;
+    final telefonoVacio = _telefonoController.text.trim().isEmpty;
+
+    if (nombreVacio && telefonoVacio) {
+      _mostrarDialogoCamposVacios('ambos campos');
+      return;
+    } else if (nombreVacio) {
+      _mostrarDialogoCamposVacios('el nombre');
+      return;
+    } else if (telefonoVacio) {
+      _mostrarDialogoCamposVacios('el teléfono');
+      return;
+    }
+
+    if (!_formKey.currentState!.validate()) {
+      ErrorLogger().logWarning('Validación del formulario falló');
+      return;
+    }
+
+    setState(() => _guardando = true);
+
+    try {
+      final contacto = Contacto(
+        nombre: _nombreController.text.trim(),
+        telefono: _telefonoController.text.trim(),
+      );
+
+      await ContactoService.guardarContacto(contacto);
+
+      if (mounted) {
+        _mostrarDialogoExito(contacto.nombre);
+        _nombreController.clear();
+        _telefonoController.clear();
+      }
+    } catch (e, stackTrace) {
+      ErrorLogger().logError(
+        'Error al guardar contacto',
+        error: e,
+        stackTrace: stackTrace,
+      );
+
+      if (mounted) {
+        _mostrarDialogoError('Error al guardar: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _guardando = false);
+    }
+  }
+
+  void _mostrarDialogoCamposVacios(String campoFaltante) {
+    String titulo = '';
+    String mensaje = '';
+    IconData icono = Icons.warning;
+    Color color = Colors.orange;
+
+    switch (campoFaltante) {
+      case 'ambos campos':
+        titulo = '📝 Formulario Incompleto';
+        mensaje =
+            'Por favor, digite tanto el nombre como el teléfono del contacto.';
+        icono = Icons.error_outline;
+        color = Colors.red;
+        break;
+      case 'el nombre':
+        titulo = '👤 Falta el Nombre';
+        mensaje = 'Por favor, digite el nombre del contacto.';
+        icono = Icons.person_off;
+        color = Colors.orange;
+        break;
+      case 'el teléfono':
+        titulo = '📞 Falta el Teléfono';
+        mensaje = 'Por favor, digite el teléfono del contacto.';
+        icono = Icons.phone_disabled;
+        color = Colors.orange;
+        break;
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          padding: const EdgeInsets.all(25),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icono, color: color, size: 50),
+              const SizedBox(height: 15),
+              Text(
+                titulo,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(mensaje, textAlign: TextAlign.center),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(backgroundColor: color),
+                child: const Text(
+                  'Entendido',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _mostrarDialogoExito(String nombreContacto) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          padding: const EdgeInsets.all(25),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.check_circle, color: Colors.green, size: 60),
+              const SizedBox(height: 15),
+              const Text(
+                '¡Éxito! 🎉',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.green,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '"$nombreContacto" se agregó correctamente',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 5),
+              const Text(
+                'El contacto ha sido guardado en tu lista',
+                style: TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                child: const Text(
+                  '¡Perfecto!',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _mostrarDialogoError(String mensaje) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          padding: const EdgeInsets.all(25),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error, color: Colors.red, size: 50),
+              const SizedBox(height: 15),
+              const Text(
+                'Error',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.red,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(mensaje, textAlign: TextAlign.center),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text(
+                  'Aceptar',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Agregar Contacto 🚀'),
+        backgroundColor: Colors.blue[700],
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.emoji_events),
+            onPressed: () => Navigator.pushNamed(
+              context,
+              '/lista',
+            ).then((_) => _verLogros()),
+            tooltip: 'Ver logros y estadísticas',
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              children: [
+                const SizedBox(height: 20),
+                Tooltip(
+                  message: 'Digite el nombre completo del contacto',
+                  child: TextFormField(
+                    controller: _nombreController,
+                    decoration: const InputDecoration(
+                      labelText: 'Digite su nombre',
+                      prefixIcon: Icon(Icons.person, color: Colors.blue),
+                      border: OutlineInputBorder(),
+                      hintText: 'Ej: Juan Pérez',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 15),
+                Tooltip(
+                  message: 'Digite el número de teléfono del contacto',
+                  child: TextFormField(
+                    controller: _telefonoController,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Digite su teléfono',
+                      prefixIcon: Icon(Icons.phone, color: Colors.blue),
+                      border: OutlineInputBorder(),
+                      hintText: 'Ej: 3001234567',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 25),
+                Tooltip(
+                  message: 'Guardar el contacto en la lista',
+                  child: ElevatedButton(
+                    onPressed: _guardando ? null : _guardarContacto,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue[600],
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 15),
+                      minimumSize: const Size(double.infinity, 50),
+                    ),
+                    child: _guardando
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text(
+                            '💾 GUARDAR CONTACTO',
+                            style: TextStyle(fontSize: 16),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 15),
+                Tooltip(
+                  message: 'Ver todos los contactos guardados y estadísticas',
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pushNamed(context, '/lista'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 15),
+                      minimumSize: const Size(double.infinity, 50),
+                    ),
+                    child: const Text(
+                      '📋 VER LISTA Y ESTADÍSTICAS',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _verLogros() {
+    // Se mostrarán en la pantalla de lista
+  }
+
+  @override
+  void dispose() {
+    _nombreController.dispose();
+    _telefonoController.dispose();
+    super.dispose();
+  }
+}
+
+class PantallaLista extends StatefulWidget {
+  const PantallaLista({super.key});
+
+  @override
+  State<PantallaLista> createState() => _PantallaListaState();
+}
+
+class _PantallaListaState extends State<PantallaLista> {
+  List<Contacto> _contactos = [];
+  List<Contacto> _contactosFiltrados = [];
+  final _busquedaController = TextEditingController();
+  bool _cargando = true;
+  bool _modoOscuro = false;
+  Color _colorTema = Colors.blue;
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarContactos();
+    _busquedaController.addListener(_filtrarContactos);
+  }
+
+  Future<void> _cargarContactos() async {
+    setState(() => _cargando = true);
+    try {
+      final contactos = await ContactoService.cargarContactos();
+      setState(() {
+        _contactos = contactos;
+        _contactosFiltrados = contactos;
+      });
+    } catch (e) {
+      _mostrarDialogoError('Error al cargar contactos: $e');
+    } finally {
+      setState(() => _cargando = false);
+    }
+  }
+
+  void _filtrarContactos() {
+    final query = _busquedaController.text.toLowerCase();
+    setState(() {
+      _contactosFiltrados = _contactos
+          .where(
+            (c) =>
+                c.nombre.toLowerCase().contains(query) ||
+                c.telefono.contains(query),
+          )
+          .toList();
+    });
+  }
+
+  void _mostrarDialogoError(String mensaje) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [Icon(Icons.error), SizedBox(width: 10), Text('Error')],
+        ),
+        content: Text(mensaje),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _mostrarDialogoExito(String mensaje) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(mensaje),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _mostrarDialogoExportacion() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '📤 Exportar Contactos',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _BotonExportacion(
+                  icono: Icons.text_snippet,
+                  texto: 'TXT',
+                  onTap: () => _exportar('txt'),
+                ),
+                _BotonExportacion(
+                  icono: Icons.table_chart,
+                  texto: 'CSV',
+                  onTap: () => _exportar('csv'),
+                ),
+                _BotonExportacion(
+                  icono: Icons.html,
+                  texto: 'HTML',
+                  onTap: () => _exportar('html'),
+                ),
+                _BotonExportacion(
+                  icono: Icons.code,
+                  texto: 'JSON',
+                  onTap: () => _exportar('json'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportar(String formato) async {
+    if (_contactos.isEmpty) {
+      _mostrarDialogoError('No hay contactos para exportar');
+      return;
+    }
+    try {
+      Navigator.pop(context);
+      final contenido = await ExportService.exportarContactos(
+        _contactos,
+        formato,
+      );
+      _mostrarOpcionesCompartir(contenido, formato);
+    } catch (e) {
+      _mostrarDialogoError('Error al exportar: $e');
+    }
+  }
+
+  void _mostrarOpcionesCompartir(String contenido, String formato) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '🌐 Compartir Contactos',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              'Formato: $formato',
+              style: const TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 20),
+
+            if (kIsWeb) ...[
+              _BotonCompartir(
+                icono: Icons.chat,
+                texto: 'WhatsApp',
+                color: Colors.green,
+                onTap: () => _compartirWhatsApp(contenido),
+              ),
+              const SizedBox(height: 10),
+              _BotonCompartir(
+                icono: Icons.facebook,
+                texto: 'Facebook',
+                color: Colors.blue[800]!,
+                onTap: () => _compartirFacebook(contenido),
+              ),
+              const SizedBox(height: 10),
+            ],
+
+            _BotonCompartir(
+              icono: Icons.share,
+              texto: 'Compartir',
+              color: Colors.blue,
+              onTap: () => _compartirGenerico(contenido, formato),
+            ),
+            const SizedBox(height: 10),
+
+            _BotonCompartir(
+              icono: Icons.qr_code,
+              texto: 'Generar QR',
+              color: Colors.purple,
+              onTap: () => _generarQR(contenido),
+            ),
+            const SizedBox(height: 10),
+
+            _BotonCompartir(
+              icono: Icons.email,
+              texto: 'Enviar por Email',
+              color: Colors.orange,
+              onTap: () => _enviarPorEmail(contenido, formato),
+            ),
+            const SizedBox(height: 10),
+
+            _BotonCompartir(
+              icono: Icons.content_copy,
+              texto: 'Copiar al Portapapeles',
+              color: Colors.teal,
+              onTap: () => _copiarPortapapeles(contenido),
+            ),
+
+            const SizedBox(height: 20),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cerrar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _compartirWhatsApp(String contenido) {
+    final texto = Uri.encodeComponent(
+      'Mis contactos exportados:\n\n$contenido',
+    );
+    final url = 'https://wa.me/?text=$texto';
+    _abrirUrl(url);
+    _mostrarDialogoExito('Compartiendo por WhatsApp...');
+  }
+
+  void _compartirFacebook(String contenido) {
+    final texto = Uri.encodeComponent(
+      'Mis contactos exportados:\n\n$contenido',
+    );
+    final url = 'https://www.facebook.com/sharer/sharer.php?quote=$texto';
+    _abrirUrl(url);
+    _mostrarDialogoExito('Compartiendo por Facebook...');
+  }
+
+  void _compartirGenerico(String contenido, String formato) {
+    final texto = 'Mis contactos exportados ($formato):\n\n$contenido';
+    if (kIsWeb) {
+      _abrirUrl(
+        'mailto:?subject=Mis Contactos&body=${Uri.encodeComponent(texto)}',
+      );
+    } else {
+      Share.share(texto);
+    }
+    _mostrarDialogoExito('Compartiendo contactos...');
+  }
+
+  void _generarQR(String contenido) {
+    _mostrarDialogoExito('🔄 Generando código QR...');
+
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        child: Container(
+          padding: const EdgeInsets.all(25),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.qr_code, size: 80, color: Colors.purple),
+              const SizedBox(height: 15),
+              const Text(
+                '🚀 Función QR',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Próximamente: podrás generar un código QR\ncon tus contactos para compartir fácilmente!',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('¡Qué genial!'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _enviarPorEmail(String contenido, String formato) {
+    final subject = 'Mis Contactos Exportados';
+    final body =
+        'Aquí están mis contactos exportados en formato $formato:\n\n$contenido';
+
+    if (kIsWeb) {
+      final url =
+          'mailto:?subject=${Uri.encodeComponent(subject)}&body=${Uri.encodeComponent(body)}';
+      _abrirUrl(url);
+    } else {
+      Share.share(body, subject: subject);
+    }
+    _mostrarDialogoExito('📧 Abriendo cliente de email...');
+  }
+
+  void _copiarPortapapeles(String contenido) {
+    if (kIsWeb) {
+      html.window.navigator.clipboard?.writeText(contenido);
+    }
+    _mostrarDialogoExito('📋 ¡Copiado al portapapeles!');
+  }
+
+  void _abrirUrl(String url) {
+    if (kIsWeb) {
+      html.window.open(url, '_blank');
+    }
+  }
+
+  void _importarContactos() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        final _textoController = TextEditingController();
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.upload),
+              SizedBox(width: 10),
+              Text('Importar Contactos'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Pega los contactos (Nombre,Teléfono):'),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _textoController,
+                maxLines: 5,
+                decoration: const InputDecoration(
+                  hintText: 'Juan Pérez,123456789\nMaría García,987654321',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final texto = _textoController.text;
+                Navigator.pop(context);
+                _procesarImportacionManual(texto);
+              },
+              child: const Text('Importar'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _procesarImportacionManual(String texto) async {
+    try {
+      final lineas = texto.split('\n');
+      final nuevosContactos = <Contacto>[];
+
+      for (var linea in lineas) {
+        linea = linea.trim();
+        if (linea.isNotEmpty) {
+          final partes = linea.split(',');
+          if (partes.length >= 2) {
+            nuevosContactos.add(
+              Contacto(nombre: partes[0].trim(), telefono: partes[1].trim()),
+            );
+          }
+        }
+      }
+
+      if (nuevosContactos.isNotEmpty) {
+        await ContactoService.importarContactos(nuevosContactos);
+        await _cargarContactos();
+        _mostrarDialogoExito(
+          '✅ ${nuevosContactos.length} contactos importados',
+        );
+      } else {
+        _mostrarDialogoError('❌ No se encontraron contactos válidos');
+      }
+    } catch (e) {
+      _mostrarDialogoError('❌ Error al importar: $e');
+    }
+  }
+
+  Future<void> _eliminarContacto(Contacto contacto) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Eliminar Contacto'),
+        content: Text('¿Eliminar a ${contacto.nombre}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar == true) {
+      try {
+        await ContactoService.eliminarContacto(contacto);
+        await _cargarContactos();
+        _mostrarDialogoExito('✅ Contacto eliminado');
+      } catch (e) {
+        _mostrarDialogoError('❌ Error al eliminar: $e');
+      }
+    }
+  }
+
+  void _cambiarModo() {
+    setState(() {
+      _modoOscuro = !_modoOscuro;
+    });
+    _mostrarDialogoExito(
+      _modoOscuro ? '🌙 Modo oscuro activado' : '☀️ Modo claro activado',
+    );
+  }
+
+  void _cambiarTema() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '🎨 Elegir tema',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 15),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _TemaBoton(
+                  color: Colors.blue,
+                  nombre: 'Azul',
+                  onTap: () => _seleccionarTema(Colors.blue),
+                ),
+                _TemaBoton(
+                  color: Colors.green,
+                  nombre: 'Verde',
+                  onTap: () => _seleccionarTema(Colors.green),
+                ),
+                _TemaBoton(
+                  color: Colors.purple,
+                  nombre: 'Morado',
+                  onTap: () => _seleccionarTema(Colors.purple),
+                ),
+                _TemaBoton(
+                  color: Colors.orange,
+                  nombre: 'Naranja',
+                  onTap: () => _seleccionarTema(Colors.orange),
+                ),
+                _TemaBoton(
+                  color: Colors.red,
+                  nombre: 'Rojo',
+                  onTap: () => _seleccionarTema(Colors.red),
+                ),
+                _TemaBoton(
+                  color: Colors.teal,
+                  nombre: 'Verde Azulado',
+                  onTap: () => _seleccionarTema(Colors.teal),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _seleccionarTema(Color color) {
+    setState(() {
+      _colorTema = color;
+    });
+    Navigator.pop(context);
+    _mostrarDialogoExito('🎨 Tema cambiado a ${_getNombreColor(color)}');
+  }
+
+  String _getNombreColor(Color color) {
+    if (color == Colors.blue) return 'Azul';
+    if (color == Colors.green) return 'Verde';
+    if (color == Colors.purple) return 'Morado';
+    if (color == Colors.orange) return 'Naranja';
+    if (color == Colors.red) return 'Rojo';
+    if (color == Colors.teal) return 'Verde Azulado';
+    return 'Personalizado';
+  }
+
+  void _verLogros() async {
+    final logros = await ContactoService.obtenerLogros();
+
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        child: Container(
+          padding: const EdgeInsets.all(25),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.emoji_events, size: 50, color: Colors.amber),
+              const SizedBox(height: 15),
+              const Text(
+                '🏆 Tus Logros',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 15),
+              _LogroItem(
+                icono: Icons.person_add,
+                texto: 'Primer contacto',
+                desbloqueado: logros.contains('primer_contacto'),
+              ),
+              _LogroItem(
+                icono: Icons.collections,
+                texto: 'Coleccionista (5 contactos)',
+                desbloqueado: logros.contains('coleccionista'),
+              ),
+              _LogroItem(
+                icono: Icons.people,
+                texto: 'Social (10 contactos)',
+                desbloqueado: logros.contains('social'),
+              ),
+              _LogroItem(
+                icono: Icons.star,
+                texto: 'Popular (20 contactos)',
+                desbloqueado: logros.contains('popular'),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('¡Increíble!'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEstadisticas() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _colorTema.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: _colorTema.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            '📊 Estadísticas Divertidas',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _EstadisticaItem(
+                icono: Icons.people,
+                valor: _contactos.length,
+                texto: 'Contactos',
+                color: _colorTema,
+              ),
+              _EstadisticaItem(
+                icono: Icons.celebration,
+                valor: DateTime.now().day,
+                texto: 'Día lucky',
+                color: _colorTema,
+              ),
+              _EstadisticaItem(
+                icono: Icons.emoji_events,
+                valor: _contactos.length ~/ 5,
+                texto: 'Nivel',
+                color: _colorTema,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('📋 Lista de Contactos 🚀'),
+        backgroundColor: _colorTema,
+        foregroundColor: Colors.white,
+        actions: [
+          Tooltip(
+            message: 'Cambiar tema de colores',
+            child: IconButton(
+              icon: const Icon(Icons.palette),
+              onPressed: _cambiarTema,
+            ),
+          ),
+          Tooltip(
+            message: _modoOscuro
+                ? 'Cambiar a modo claro'
+                : 'Cambiar a modo oscuro',
+            child: IconButton(
+              icon: Icon(_modoOscuro ? Icons.light_mode : Icons.dark_mode),
+              onPressed: _cambiarModo,
+            ),
+          ),
+          Tooltip(
+            message: 'Ver logros y estadísticas',
+            child: IconButton(
+              icon: const Icon(Icons.emoji_events),
+              onPressed: _verLogros,
+            ),
+          ),
+          if (_contactos.isNotEmpty) ...[
+            Tooltip(
+              message: 'Ayuda para importar contactos',
+              child: IconButton(
+                icon: const Icon(Icons.help),
+                onPressed: _mostrarAyudaImportacion,
+              ),
+            ),
+            Tooltip(
+              message: 'Importar contactos desde texto',
+              child: IconButton(
+                icon: const Icon(Icons.upload_file),
+                onPressed: _importarContactos,
+              ),
+            ),
+            Tooltip(
+              message: 'Exportar contactos a diferentes formatos',
+              child: IconButton(
+                icon: const Icon(Icons.ios_share),
+                onPressed: _mostrarDialogoExportacion,
+              ),
+            ),
+          ],
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Tooltip(
+              message: 'Buscar contactos por nombre o teléfono',
+              child: TextField(
+                controller: _busquedaController,
+                decoration: InputDecoration(
+                  labelText: '🔍 Buscar contacto...',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _busquedaController.text.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () => _busquedaController.clear(),
+                        )
+                      : null,
+                ),
+              ),
+            ),
+          ),
+
+          if (_contactos.isNotEmpty) _buildEstadisticas(),
+
+          Expanded(
+            child: _cargando
+                ? const Center(child: CircularProgressIndicator())
+                : _contactosFiltrados.isEmpty
+                ? const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.contacts, size: 64, color: Colors.grey),
+                        SizedBox(height: 16),
+                        Text(
+                          'No hay contactos',
+                          style: TextStyle(fontSize: 18),
+                        ),
+                        Text(
+                          '¡Agrega tu primer contacto para comenzar!',
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: _contactosFiltrados.length,
+                    itemBuilder: (context, index) {
+                      final contacto = _contactosFiltrados[index];
+                      return Tooltip(
+                        message: 'Haz clic para ver opciones',
+                        child: Card(
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 4,
+                          ),
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: _colorTema.withOpacity(0.2),
+                              child: Text(
+                                contacto.nombre.isNotEmpty
+                                    ? contacto.nombre[0].toUpperCase()
+                                    : '?',
+                                style: TextStyle(
+                                  color: _colorTema,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            title: Text(
+                              contacto.nombre,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            subtitle: Text(contacto.telefono),
+                            trailing: Tooltip(
+                              message: 'Eliminar este contacto',
+                              child: IconButton(
+                                icon: const Icon(
+                                  Icons.delete,
+                                  color: Colors.red,
+                                ),
+                                onPressed: () => _eliminarContacto(contacto),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+      floatingActionButton: Tooltip(
+        message: 'Volver al formulario de contacto',
+        child: FloatingActionButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Icon(Icons.arrow_back),
+          backgroundColor: _colorTema,
+        ),
+      ),
+    );
+  }
+
+  void _mostrarAyudaImportacion() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.help),
+            SizedBox(width: 10),
+            Text('Ayuda para Importar'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Formato requerido:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 5),
+            Text('• Nombre,Teléfono'),
+            Text('• Un contacto por línea'),
+            SizedBox(height: 10),
+            Text('Ejemplo:', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              'Juan Pérez,3001234567\nMaría García,3109876543\nCarlos López,3205557890',
+              style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _busquedaController.dispose();
+    super.dispose();
+  }
+}
+
+// Widgets auxiliares
+class _BotonExportacion extends StatelessWidget {
+  final IconData icono;
+  final String texto;
+  final VoidCallback onTap;
+
+  const _BotonExportacion({
+    required this.icono,
+    required this.texto,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Exportar a formato $texto',
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          width: 80,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.blue[50],
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.blue),
+          ),
+          child: Column(
+            children: [
+              Icon(icono, size: 24, color: Colors.blue),
+              const SizedBox(height: 5),
+              Text(
+                texto,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BotonCompartir extends StatelessWidget {
+  final IconData icono;
+  final String texto;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _BotonCompartir({
+    required this.icono,
+    required this.texto,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: texto,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: color),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icono, size: 20, color: color),
+              const SizedBox(width: 8),
+              Text(
+                texto,
+                style: TextStyle(color: color, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TemaBoton extends StatelessWidget {
+  final Color color;
+  final String nombre;
+  final VoidCallback onTap;
+
+  const _TemaBoton({
+    required this.color,
+    required this.nombre,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.2),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color),
+        ),
+        child: Column(
+          children: [
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(height: 5),
+            Text(nombre, style: TextStyle(fontSize: 12, color: color)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LogroItem extends StatelessWidget {
+  final IconData icono;
+  final String texto;
+  final bool desbloqueado;
+
+  const _LogroItem({
+    required this.icono,
+    required this.texto,
+    required this.desbloqueado,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: Icon(icono, color: desbloqueado ? Colors.amber : Colors.grey),
+      title: Text(
+        texto,
+        style: TextStyle(
+          color: desbloqueado ? Colors.black : Colors.grey,
+          fontWeight: desbloqueado ? FontWeight.bold : FontWeight.normal,
+        ),
+      ),
+      trailing: desbloqueado
+          ? const Icon(Icons.check_circle, color: Colors.green)
+          : const Icon(Icons.lock, color: Colors.grey),
+    );
+  }
+}
+
+class _EstadisticaItem extends StatelessWidget {
+  final IconData icono;
+  final int valor;
+  final String texto;
+  final Color color;
+
+  const _EstadisticaItem({
+    required this.icono,
+    required this.valor,
+    required this.texto,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Icon(icono, color: color, size: 30),
+        Text(
+          '$valor',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(texto, style: const TextStyle(fontSize: 12)),
+      ],
+    );
+  }
+}
